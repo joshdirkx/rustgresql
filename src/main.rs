@@ -8,7 +8,24 @@ use ratatui::{
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
 use tokio_postgres::NoTls;
-use std::{error::Error, io};
+use std::{env, error::Error, io};
+use dotenv::dotenv;
+
+// Function to fetch connection details from environment variables
+fn get_connection_string() -> Result<String, Box<dyn Error>> {
+    dotenv().ok(); // Load .env file
+
+    // Read environment variables
+    let user = env::var("POSTGRES_USER")?;
+    let password = env::var("POSTGRES_PASSWORD")?;
+    let host = env::var("POSTGRES_HOST").unwrap_or_else(|_| "localhost".to_string());
+    let port = env::var("POSTGRES_PORT").unwrap_or_else(|_| "5432".to_string());
+
+    Ok(format!(
+        "host={} port={} user={} password={}",
+        host, port, user, password
+    ))
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ActivePane {
@@ -62,8 +79,9 @@ impl AppState {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let connection_string = get_connection_string()?;
     // Connect to PostgreSQL
-    let (client, connection) = tokio_postgres::connect("host=localhost user=postgres password=secret", NoTls).await?;
+    let (client, connection) = tokio_postgres::connect(&connection_string, NoTls).await?;
     tokio::spawn(async move {
         if let Err(e) = connection.await {
             eprintln!("Connection error: {}", e);
@@ -199,9 +217,37 @@ match (key.code, key.modifiers) {
     (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
         app_state.active_pane = ActivePane::QueryInput;
     }
-    // Quit
-    (KeyCode::Char('q'), _) => break,
-    // Handle query input (only in QueryInput pane)
+
+    // Navigation within panes using hjkl
+    (KeyCode::Char('j'), KeyModifiers::NONE) => {
+        if app_state.active_pane == ActivePane::Databases {
+            app_state.next_database();
+            if let Some(selected) = app_state.selected_database {
+                let db_name = &app_state.databases[selected];
+                let tables = fetch_tables(db_name).await?;
+                app_state.set_tables(tables);
+            }
+        } else if app_state.active_pane == ActivePane::Tables {
+            // Add logic for navigating tables if required
+        } else if app_state.active_pane == ActivePane::Main {
+            // Add logic for navigating main content
+        }
+    }
+    (KeyCode::Char('k'), KeyModifiers::NONE) => {
+        if app_state.active_pane == ActivePane::Databases {
+            app_state.previous_database();
+            if let Some(selected) = app_state.selected_database {
+                let db_name = &app_state.databases[selected];
+                let tables = fetch_tables(db_name).await?;
+                app_state.set_tables(tables);
+            }
+        } else if app_state.active_pane == ActivePane::Tables {
+            // Add logic for navigating tables if required
+        } else if app_state.active_pane == ActivePane::Main {
+            // Add logic for navigating main content
+        }
+    }
+    // Handle other input (e.g., query input)
     (KeyCode::Char(c), _) if app_state.active_pane == ActivePane::QueryInput => {
         app_state.query.push(c);
     }
@@ -218,6 +264,8 @@ match (key.code, key.modifiers) {
             };
         }
     }
+    // Quit
+    (KeyCode::Char('q'), _) => break,
     _ => {}
 }
         }

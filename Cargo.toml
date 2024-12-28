@@ -8,3 +8,4 @@ ratatui = "0.29.0"
 crossterm = "0.28.1"
 tokio = { version = "1.42.0", features = ["full"] }
 tokio-postgres = "0.7.12"
+dotenv = "0.15.0"
