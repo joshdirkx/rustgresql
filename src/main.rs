@@ -39,6 +39,7 @@ struct AppState {
     databases: Vec<String>,
     selected_database: Option<usize>,
     tables: Vec<String>,
+    selected_table: Option<usize>, // Added for table navigation
     query: String, // Store the current query input
     query_result: String, // Store the result of the executed query
     active_pane: ActivePane,
@@ -50,6 +51,7 @@ impl AppState {
             databases,
             selected_database: Some(0),
             tables: vec![],
+            selected_table: Some(0), // Initialize table selection
             query: String::new(),
             query_result: String::new(),
             active_pane: ActivePane::Databases,
@@ -72,8 +74,25 @@ impl AppState {
         }
     }
 
+    fn next_table(&mut self) {
+        if let Some(selected) = self.selected_table {
+            if selected < self.tables.len() - 1 {
+                self.selected_table = Some(selected + 1);
+            }
+        }
+    }
+
+    fn previous_table(&mut self) {
+        if let Some(selected) = self.selected_table {
+            if selected > 0 {
+                self.selected_table = Some(selected - 1);
+            }
+        }
+    }
+
     fn set_tables(&mut self, tables: Vec<String>) {
         self.tables = tables;
+        self.selected_table = Some(0); // Reset table selection when tables are updated
     }
 }
 
@@ -163,6 +182,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .map(|table| ListItem::new(table.clone()))
                 .collect();
 
+            let mut table_list_state = ListState::default();
+            table_list_state.select(app_state.selected_table);
+
             let table_sidebar = List::new(table_items)
                 .block(Block::default()
                     .title("Tables")
@@ -171,7 +193,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         Style::default().fg(Color::Yellow)
                     } else {
                         Style::default()
-                    }));
+                    }))
+                .highlight_style(Style::default().bg(Color::Yellow).fg(Color::Black))
+                .highlight_symbol("> ");
 
             // Main content area
             let main_area = Block::default()
@@ -196,78 +220,74 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             // Render widgets
             f.render_stateful_widget(db_sidebar, vertical_chunks_left[0], &mut db_list_state);
-            f.render_widget(table_sidebar, vertical_chunks_left[1]);
+            f.render_stateful_widget(table_sidebar, vertical_chunks_left[1], &mut table_list_state);
             f.render_widget(main_area, vertical_chunks_right[0]);
             f.render_widget(query_input, vertical_chunks_right[1]);
         })?;
 
         // Handle input
         if let Event::Key(key) = event::read()? {
-match (key.code, key.modifiers) {
-    // Switch panes with Ctrl + hjkl
-    (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
-        app_state.active_pane = ActivePane::Databases;
-    }
-    (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
-        app_state.active_pane = ActivePane::Tables;
-    }
-    (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
-        app_state.active_pane = ActivePane::Main;
-    }
-    (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
-        app_state.active_pane = ActivePane::QueryInput;
-    }
+            match (key.code, key.modifiers) {
+                // Switch panes with Ctrl + hjkl
+                (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
+                    app_state.active_pane = ActivePane::Databases;
+                }
+                (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
+                    app_state.active_pane = ActivePane::Tables;
+                }
+                (KeyCode::Char('k'), KeyModifiers::CONTROL) => {
+                    app_state.active_pane = ActivePane::Main;
+                }
+                (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
+                    app_state.active_pane = ActivePane::QueryInput;
+                }
 
-    // Navigation within panes using hjkl
-    (KeyCode::Char('j'), KeyModifiers::NONE) => {
-        if app_state.active_pane == ActivePane::Databases {
-            app_state.next_database();
-            if let Some(selected) = app_state.selected_database {
-                let db_name = &app_state.databases[selected];
-                let tables = fetch_tables(db_name).await?;
-                app_state.set_tables(tables);
+                // Navigation within panes using hjkl
+                (KeyCode::Char('j'), KeyModifiers::NONE) => {
+                    if app_state.active_pane == ActivePane::Databases {
+                        app_state.next_database();
+                        if let Some(selected) = app_state.selected_database {
+                            let db_name = &app_state.databases[selected];
+                            let tables = fetch_tables(db_name).await?;
+                            app_state.set_tables(tables);
+                        }
+                    } else if app_state.active_pane == ActivePane::Tables {
+                        app_state.next_table();
+                    }
+                }
+                (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                    if app_state.active_pane == ActivePane::Databases {
+                        app_state.previous_database();
+                        if let Some(selected) = app_state.selected_database {
+                            let db_name = &app_state.databases[selected];
+                            let tables = fetch_tables(db_name).await?;
+                            app_state.set_tables(tables);
+                        }
+                    } else if app_state.active_pane == ActivePane::Tables {
+                        app_state.previous_table();
+                    }
+                }
+                // Handle other input (e.g., query input)
+                (KeyCode::Char(c), _) if app_state.active_pane == ActivePane::QueryInput => {
+                    app_state.query.push(c);
+                }
+                (KeyCode::Backspace, _) if app_state.active_pane == ActivePane::QueryInput => {
+                    app_state.query.pop();
+                }
+                (KeyCode::Enter, _) if app_state.active_pane == ActivePane::QueryInput => {
+                    if let Some(selected) = app_state.selected_database {
+                        let db_name = &app_state.databases[selected];
+                        let result = execute_query(db_name, &app_state.query).await;
+                        app_state.query_result = match result {
+                            Ok(res) => res,
+                            Err(err) => format!("Error: {}", err),
+                        };
+                    }
+                }
+                // Quit
+                (KeyCode::Char('q'), _) => break,
+                _ => {}
             }
-        } else if app_state.active_pane == ActivePane::Tables {
-            // Add logic for navigating tables if required
-        } else if app_state.active_pane == ActivePane::Main {
-            // Add logic for navigating main content
-        }
-    }
-    (KeyCode::Char('k'), KeyModifiers::NONE) => {
-        if app_state.active_pane == ActivePane::Databases {
-            app_state.previous_database();
-            if let Some(selected) = app_state.selected_database {
-                let db_name = &app_state.databases[selected];
-                let tables = fetch_tables(db_name).await?;
-                app_state.set_tables(tables);
-            }
-        } else if app_state.active_pane == ActivePane::Tables {
-            // Add logic for navigating tables if required
-        } else if app_state.active_pane == ActivePane::Main {
-            // Add logic for navigating main content
-        }
-    }
-    // Handle other input (e.g., query input)
-    (KeyCode::Char(c), _) if app_state.active_pane == ActivePane::QueryInput => {
-        app_state.query.push(c);
-    }
-    (KeyCode::Backspace, _) if app_state.active_pane == ActivePane::QueryInput => {
-        app_state.query.pop();
-    }
-    (KeyCode::Enter, _) if app_state.active_pane == ActivePane::QueryInput => {
-        if let Some(selected) = app_state.selected_database {
-            let db_name = &app_state.databases[selected];
-            let result = execute_query(db_name, &app_state.query).await;
-            app_state.query_result = match result {
-                Ok(res) => res,
-                Err(err) => format!("Error: {}", err),
-            };
-        }
-    }
-    // Quit
-    (KeyCode::Char('q'), _) => break,
-    _ => {}
-}
         }
     }
 
@@ -276,7 +296,7 @@ match (key.code, key.modifiers) {
 }
 
 async fn fetch_tables(db_name: &str) -> Result<Vec<String>, Box<dyn Error>> {
-    let connection_string = format!("host=localhost user=postgres password=secret dbname={}", db_name);
+    let connection_string = format!("host=localhost user=postgres password=postgres dbname={}", db_name);
     let (client, connection) = tokio_postgres::connect(&connection_string, NoTls).await?;
     tokio::spawn(async move {
         if let Err(e) = connection.await {
@@ -290,7 +310,7 @@ async fn fetch_tables(db_name: &str) -> Result<Vec<String>, Box<dyn Error>> {
 }
 
 async fn execute_query(db_name: &str, query: &str) -> Result<String, Box<dyn Error>> {
-    let connection_string = format!("host=localhost user=postgres password=secret dbname={}", db_name);
+    let connection_string = format!("host=localhost user=postgres password=postgres dbname={}", db_name);
     let (client, connection) = tokio_postgres::connect(&connection_string, NoTls).await?;
     tokio::spawn(async move {
         if let Err(e) = connection.await {
