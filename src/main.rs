@@ -1,6 +1,6 @@
 use ratatui::{
     backend::{CrosstermBackend},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Table, Row, Cell},
     layout::{Layout, Constraint, Direction},
     style::{Style, Color},
     Terminal,
@@ -39,9 +39,9 @@ struct AppState {
     databases: Vec<String>,
     selected_database: Option<usize>,
     tables: Vec<String>,
-    selected_table: Option<usize>, // Added for table navigation
-    query: String, // Store the current query input
-    query_result: String, // Store the result of the executed query
+    selected_table: Option<usize>,
+    query: String,
+    query_result: Vec<Vec<String>>, // Store query result as a 2D vector
     active_pane: ActivePane,
 }
 
@@ -51,9 +51,9 @@ impl AppState {
             databases,
             selected_database: Some(0),
             tables: vec![],
-            selected_table: Some(0), // Initialize table selection
+            selected_table: Some(0),
             query: String::new(),
-            query_result: String::new(),
+            query_result: vec![],
             active_pane: ActivePane::Databases,
         }
     }
@@ -92,14 +92,13 @@ impl AppState {
 
     fn set_tables(&mut self, tables: Vec<String>) {
         self.tables = tables;
-        self.selected_table = Some(0); // Reset table selection when tables are updated
+        self.selected_table = Some(0);
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let connection_string = get_connection_string()?;
-    // Connect to PostgreSQL
     let (client, connection) = tokio_postgres::connect(&connection_string, NoTls).await?;
     tokio::spawn(async move {
         if let Err(e) = connection.await {
@@ -107,53 +106,44 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    // Fetch the list of databases
     let rows = client.query("SELECT datname FROM pg_database WHERE datistemplate = false", &[]).await?;
     let databases: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
 
-    // Initialize application state
     let mut app_state = AppState::new(databases);
 
-    // Fetch initial tables for the first database
     if let Some(selected) = app_state.selected_database {
         let db_name = &app_state.databases[selected];
         let tables = fetch_tables(db_name).await?;
         app_state.set_tables(tables);
     }
 
-    // Initialize terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Main loop
     loop {
         terminal.draw(|f| {
             let size = f.size();
-
-            // Create a layout with three main sections
             let horizontal_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
                 .split(size);
 
-            // Left vertical layout for databases and tables
             let vertical_chunks_left = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(horizontal_chunks[0]);
 
-            // Right vertical layout for main area and query input
             let vertical_chunks_right = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Percentage(90), // Main area
-                    Constraint::Percentage(10), // Query input
+                    Constraint::Percentage(70),
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(10),
                 ])
                 .split(horizontal_chunks[1]);
 
-            // Sidebar for databases
             let db_items: Vec<ListItem> = app_state
                 .databases
                 .iter()
@@ -175,7 +165,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .highlight_style(Style::default().bg(Color::Yellow).fg(Color::Black))
                 .highlight_symbol("> ");
 
-            // Sidebar for tables
             let table_items: Vec<ListItem> = app_state
                 .tables
                 .iter()
@@ -197,17 +186,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .highlight_style(Style::default().bg(Color::Yellow).fg(Color::Black))
                 .highlight_symbol("> ");
 
-            // Main content area
-            let main_area = Block::default()
-                .title("Results")
-                .borders(Borders::ALL)
-                .style(if app_state.active_pane == ActivePane::Main {
-                    Style::default().fg(Color::Yellow)
-                } else {
-                    Style::default()
-                });
+            let query_result_table = Table::new(
+    app_state
+        .query_result
+        .iter()
+        .map(|row| Row::new(row.iter().map(|cell| Cell::from(cell.clone())))),
+    vec![Constraint::Min(10); app_state.query_result.first().map_or(0, |row| row.len())], // Set column widths dynamically
+)
+.block(Block::default().title("Query Results").borders(Borders::ALL));
 
-            // Query input area
+
             let query_input = Paragraph::new(app_state.query.clone())
                 .block(Block::default()
                     .title("Enter Query")
@@ -218,17 +206,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         Style::default()
                     }));
 
-            // Render widgets
             f.render_stateful_widget(db_sidebar, vertical_chunks_left[0], &mut db_list_state);
             f.render_stateful_widget(table_sidebar, vertical_chunks_left[1], &mut table_list_state);
-            f.render_widget(main_area, vertical_chunks_right[0]);
-            f.render_widget(query_input, vertical_chunks_right[1]);
+            f.render_widget(query_result_table, vertical_chunks_right[0]);
+            f.render_widget(query_input, vertical_chunks_right[2]);
         })?;
 
-        // Handle input
         if let Event::Key(key) = event::read()? {
             match (key.code, key.modifiers) {
-                // Switch panes with Ctrl + hjkl
                 (KeyCode::Char('h'), KeyModifiers::CONTROL) => {
                     app_state.active_pane = ActivePane::Databases;
                 }
@@ -275,16 +260,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     app_state.query.pop();
                 }
                 (KeyCode::Enter, _) if app_state.active_pane == ActivePane::QueryInput => {
-                    if let Some(selected) = app_state.selected_database {
-                        let db_name = &app_state.databases[selected];
-                        let result = execute_query(db_name, &app_state.query).await;
+                    if let (Some(db_idx), Some(table_idx)) = (app_state.selected_database, app_state.selected_table) {
+                        let db_name = &app_state.databases[db_idx];
+                        let table_name = &app_state.tables[table_idx];
+                        let query = app_state.query.clone();
+                        let result = execute_query(db_name, table_name, &query).await;
                         app_state.query_result = match result {
                             Ok(res) => res,
-                            Err(err) => format!("Error: {}", err),
+                            Err(err) => vec![vec![format!("Error: {}", err)]],
                         };
                     }
                 }
-                // Quit
                 (KeyCode::Char('q'), _) => break,
                 _ => {}
             }
@@ -309,7 +295,7 @@ async fn fetch_tables(db_name: &str) -> Result<Vec<String>, Box<dyn Error>> {
     Ok(rows.iter().map(|row| row.get(0)).collect())
 }
 
-async fn execute_query(db_name: &str, query: &str) -> Result<String, Box<dyn Error>> {
+async fn execute_query(db_name: &str, _table_name: &str, query: &str) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
     let connection_string = format!("host=localhost user=postgres password=postgres dbname={}", db_name);
     let (client, connection) = tokio_postgres::connect(&connection_string, NoTls).await?;
     tokio::spawn(async move {
@@ -318,6 +304,18 @@ async fn execute_query(db_name: &str, query: &str) -> Result<String, Box<dyn Err
         }
     });
 
+    // Execute the free-form query directly
     let rows = client.query(query, &[]).await?;
-    Ok(format!("Executed query successfully. Rows returned: {}", rows.len()))
+
+    let mut results = vec![];
+    for row in rows {
+        let mut result_row = vec![];
+        for col_idx in 0..row.len() {
+            result_row.push(row.get::<usize, String>(col_idx));
+        }
+        results.push(result_row);
+    }
+
+    Ok(results)
 }
+
