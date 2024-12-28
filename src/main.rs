@@ -135,7 +135,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             // Create a layout with three main sections
             let horizontal_chunks = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+                .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
                 .split(size);
 
             // Left vertical layout for databases and tables
@@ -148,8 +148,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let vertical_chunks_right = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Percentage(80), // Main area
-                    Constraint::Percentage(20), // Query input
+                    Constraint::Percentage(90), // Main area
+                    Constraint::Percentage(10), // Query input
                 ])
                 .split(horizontal_chunks[1]);
 
@@ -199,7 +199,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             // Main content area
             let main_area = Block::default()
-                .title("Main Area")
+                .title("Results")
                 .borders(Borders::ALL)
                 .style(if app_state.active_pane == ActivePane::Main {
                     Style::default().fg(Color::Yellow)
